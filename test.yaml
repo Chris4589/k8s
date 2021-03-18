@@ -1,0 +1,217 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name:  dev #nombre del namespace CAMBIAR
+
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: myconfigmap
+  namespace: dev #nombre del namespace CAMBIAR
+  labels:
+    app: label-deployment #label match del servicio
+data:
+  datoSaved: | #el | hace que sea archivo
+    server{
+      code
+    }
+  db_user: test
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name:  secretName
+data:
+  secretKey:  BASE64_ENCODED_VALUE #se coloca el valor en base64
+# como variable de entorno en bash export USER = chris
+# nota instalar envsubst
+# envsubst < archivo.yaml > tmp.yal
+  user: $USER # como variable de entorno en bash export USER = chris
+#
+stringData: #se usa para no tener que meterlo en base64, el lo hace automatic
+  secretKey:  VALOR_NORMAL
+  #no usar si se necesita guardar en git, mejor usar variables de entorno con envsubst
+type: Opaque
+---
+#Limita al namespace
+apiVersion: v1
+kind: List
+items:
+- apiVersion: v1
+  kind: ResourceQuota
+  metadata:
+    name: pods-high
+    namespace: dev #nombre del namespace CAMBIAR
+  spec:
+    hard:
+      requests.cpu: "1000" #1k es un cpu
+      requests.memory: 200Gi
+      limits.cpu: "1000"
+      limits.memory: 200Gi
+      pods: "10"
+---
+#Limita a los PODS dentro del namespace
+#agrega valores por default a los pods
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: mem-cpu-limit-range
+  namespace: dev #nombre del namespace CAMBIAR
+spec:
+  limits:
+  #aplicar reglas a contenedores sin limites
+  - default: #maximo
+      memory: 512Mi
+      cpu: 1
+    defaultRequest: #minimo
+      memory: 256Mi
+      cpu: 0.5
+    #Reglas para poder crear un contenedor, si no se cumplen no se crea
+  - max: #maximo (ver si lleva el - antes)
+      memory: 512Mi
+      cpu: 1
+    min: #minimo
+      memory: 256Mi
+      cpu: 0.5
+    type: Container
+---
+apiVersion: extensions/v1beta1
+kind: Deployment #Deployment
+metadata:
+  name:  my-name #nombre del deployment
+  namespace: dev #nombre del namespace CAMBIAR
+  labels: # labels del peploy
+    app: label-deployment #label match del servicio
+spec: #replicaset
+  replicas: 3 #numero de replicas
+  selector: #selector del replicaset
+    matchLabels:
+      app: label-deployment #machea con el label del POD
+  #strategy:
+  #  rollingUpdate:
+  #    maxSurge: 1
+  #    maxUnavailable: 1
+  #  type: RollingUpdate
+  template: #POD
+    metadata:
+      labels: #labels del pod
+        app: label-deployment
+    spec: 
+      containers:
+      - image:  mariadb #imagen del pod
+        imagePullPolicy: IfNotPresent
+        name:  my-name #nombre del pod
+        volumeMounts: #asociar configMap con Variables Entorno
+        - name: config-volume #cualquier name igual al de abajo
+          mountPath: /etc/config #carpeta donde se monta el volumen
+        #args: Liveness
+          #- /bin/sh
+          #- -c
+          #- touch /tmp/healthy; sleep 30; rm -rf /tmp/healthy; sleep 600
+        resources:
+          requests:
+            cpu: "20m" #memoria minima
+            memory: "55M"
+          limits: #maximo
+            memory: "128Mi"
+            cpu: "500m"
+        #PROBES
+        livenessProbe:
+          #exec: Liveness command
+            #command:
+            #- cat
+            #- /tmp/healthy
+
+          #tcpSocket: #TCP liveness
+          #  port: 5000 #en el puerto 8080
+          #initialDelaySeconds: 15 #espera 15s despues de crear
+          #periodSeconds: 20 #cada 20 s
+          
+
+          httpGet: #http liveness
+            path: /_status/healthz
+            port: 5000
+            httpHeaders:
+              - name: Custom-Header
+                value: Awesome
+
+          initialDelaySeconds: 90 #espera 90s despues del pod creado
+          timeoutSeconds: 10 #cada 10s
+
+        readinessProbe: #Reddinesprobe http
+          httpGet:
+            path: /_status/healthz
+            port: 5000
+          initialDelaySeconds: 30
+          timeoutSeconds: 10
+
+        env: #variables de entorno para en contenedor
+        - name: DEMO_GREETING
+          value: "Hello from the environment"
+        - name: DEMO_FAREWELL
+          value: "Such a sweet sorrow"
+
+        - name: USER_DB #variable desde configmap
+          valueFrom:
+            configMapKeyRef:
+              name: myconfigmap #nombre del configmap
+              key: db_user #llave del configmap
+
+        - name: USER_DB #copiar otra ves paraotro asi
+          valueFrom:
+            secretMapKeyRef:
+              name: secretName #nombre del secret
+              key: db_user #llave del secret
+            
+        - name: NODE_NAME
+        valueFrom: #viene de get pods name -o yaml obtiene esos datos
+          fieldRef: #campo de referencia
+            fieldPath: spect.nodeName #saca esa info dinamica
+
+      #consistir data, guardar un estado de la data cuando muere el pod
+      volumes: #volumenes del POD
+        #asocial config a volumen
+        - name: config-volume #debe ser el mismo nombre de volumeMounts
+          configMap:
+            name: myconfigmap #nombre del config
+            items: #si elimino items se crea un archiv en la carpeta con el nombre de cada variable de configmap
+            - key: datoSaved #llave a buscar dentro del configmap
+              path: default.conf #el nombre de como se llamara dentro del path
+
+        - name: secretName #debe ser el mismo nombre de secret que cree
+          secret: config-volume #debe ser el mismo nombre de volumeMounts
+            secretName: secretName
+            items:
+              - key: secretKey
+                path: user.txt
+
+        #emptyDir
+        - name: config-volume #tipo emptyDir, mismop nombre que mountVolume
+          emptyDir: {}
+
+        #hostPath
+        - name: cualquier-name
+          persistentVolumeClaim:
+            ClaimName: config-volume #mismo nale que mountVolume
+
+
+        #Cloud
+
+      restartPolicy: Always
+---
+kind: Service
+apiVersion: v1
+metadata:
+  name:  Service Name
+  namespace: dev #nombre del namespace CAMBIAR
+spec:
+  selector:
+    app: label-deployment #label match del servicio
+  type:  LoadBalancer | ClusterIP | NodePort
+  ports:
+  - protocol: TCP
+    port:  80
+    targetPort:  8080 #puerto del contenedor, si fuera una img hecha por mi seria el de expose
+
+
